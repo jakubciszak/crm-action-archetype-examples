@@ -1,0 +1,22 @@
+{
+    "name": "crm-archetype/examples",
+    "description": "CRM Activity Archetype — working code examples for Onboarding B2B and Loyalty Program domains",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.4"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "CrmArchetype\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "CrmArchetype\\Tests\\": "tests/"
+        }
+    }
+}
