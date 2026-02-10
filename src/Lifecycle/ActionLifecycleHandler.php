@@ -11,5 +11,5 @@ interface ActionLifecycleHandler
 {
     public function supports(string $actionType, ActionState $from, ActionState $to): bool;
 
-    public function handle(Action $action): LifecycleResult;
+    public function handle(Action $action, ActionState $from, ActionState $to): ActionLifecycleResult;
 }
