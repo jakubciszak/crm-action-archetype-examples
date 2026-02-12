@@ -2,136 +2,125 @@
 
 declare(strict_types=1);
 
-namespace CrmArchetype\Tests\Onboarding;
+namespace Tests\Onboarding;
 
-use CrmArchetype\Archetype\ActionState;
-use CrmArchetype\Archetype\Outcome;
-use CrmArchetype\Archetype\PartySignature;
-use CrmArchetype\Onboarding\OnboardingStep;
-use CrmArchetype\Onboarding\StepBlueprint;
+use Onboarding\Domain\OnboardingStep;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SharedKernel\Activity\ActionState;
+use SharedKernel\Activity\Outcome;
+use SharedKernel\Activity\OutcomeBlueprint;
+use SharedKernel\Activity\OutcomeDirective;
+use SharedKernel\Activity\OutcomeDirectiveType;
+use SharedKernel\Activity\StepBlueprint;
 
 final class OnboardingStepTest extends TestCase
 {
     #[Test]
-    public function creates_from_blueprint_with_possible_outcomes(): void
-    {
-        $step = $this->createKycStep();
-
-        self::assertSame('kyc_verify', $step->id());
-        self::assertSame('Weryfikacja dokumentów KYC', $step->description());
-        self::assertCount(3, $step->possibleOutcomes());
-        self::assertSame('Zaakceptowany', $step->possibleOutcomes()[0]->description);
-        self::assertSame('DoUzupelnienia', $step->possibleOutcomes()[1]->description);
-        self::assertSame('Odrzucony', $step->possibleOutcomes()[2]->description);
-    }
-
-    #[Test]
-    public function inherits_action_state_machine(): void
+    public function creates_from_blueprint(): void
     {
         $step = $this->createKycStep();
 
         self::assertSame(ActionState::Draft, $step->state());
+        self::assertSame('kyc_doc_verification', $step->type());
+        self::assertCount(4, $step->possibleOutcomes());
+    }
 
-        $step->submit();
-        $step->start();
+    #[Test]
+    public function transitions_draft_to_pending_to_in_progress(): void
+    {
+        $step = $this->createKycStep();
 
+        $step->transitionTo(ActionState::Pending);
+        self::assertSame(ActionState::Pending, $step->state());
+
+        $step->transitionTo(ActionState::InProgress);
         self::assertSame(ActionState::InProgress, $step->state());
     }
 
     #[Test]
-    public function requires_supplement_when_outcome_is_do_uzupelnienia(): void
+    public function cannot_transition_from_draft_to_in_progress(): void
     {
         $step = $this->createKycStep();
 
-        self::assertFalse($step->requiresSupplement());
+        $this->expectException(\DomainException::class);
+        $step->transitionTo(ActionState::InProgress);
+    }
 
-        $step->recordOutcome(new Outcome('DoUzupelnienia', reason: 'Brak KRS'));
+    #[Test]
+    public function completes_with_valid_outcome(): void
+    {
+        $step = $this->createKycStep();
+        $step->transitionTo(ActionState::Pending);
+        $step->transitionTo(ActionState::InProgress);
+
+        $outcome = new Outcome('accepted', 'Dokumenty zatwierdzone');
+        $directiveSet = $step->complete($outcome);
+        $directives = $directiveSet->directives();
+
+        self::assertSame(ActionState::Completed, $step->state());
+        self::assertCount(1, $directives);
+        self::assertSame(OutcomeDirectiveType::AdvanceStage, $directives[0]->type);
+    }
+
+    #[Test]
+    public function rejects_unknown_outcome(): void
+    {
+        $step = $this->createKycStep();
+        $step->transitionTo(ActionState::Pending);
+        $step->transitionTo(ActionState::InProgress);
+
+        $this->expectException(\DomainException::class);
+        $this->expectExceptionMessage("Outcome 'unknown' is not in possibleOutcomes");
+        $step->complete(new Outcome('unknown', 'Unknown'));
+    }
+
+    #[Test]
+    public function requires_supplement_detects_outcome(): void
+    {
+        $step = $this->createKycStep();
+        $step->transitionTo(ActionState::Pending);
+        $step->transitionTo(ActionState::InProgress);
+
+        $step->complete(new Outcome('needs_supplement', 'Brakujące dokumenty'));
 
         self::assertTrue($step->requiresSupplement());
     }
 
     #[Test]
-    public function is_accepted_when_outcome_is_zaakceptowany(): void
+    public function is_rejected_detects_outcome(): void
     {
         $step = $this->createKycStep();
+        $step->transitionTo(ActionState::Pending);
+        $step->transitionTo(ActionState::InProgress);
 
-        self::assertFalse($step->isAccepted());
-
-        $step->recordOutcome(new Outcome('Zaakceptowany'));
-
-        self::assertTrue($step->isAccepted());
-    }
-
-    #[Test]
-    public function is_rejected_when_outcome_is_odrzucony(): void
-    {
-        $step = $this->createKycStep();
-
-        self::assertFalse($step->isRejected());
-
-        $step->recordOutcome(new Outcome('Odrzucony', reason: 'Fraudulent documents'));
+        $step->complete(new Outcome('rejected', 'Dokumenty odrzucone'));
 
         self::assertTrue($step->isRejected());
     }
 
     #[Test]
-    public function full_kyc_flow_accepted(): void
+    public function is_not_rejected_for_accepted(): void
     {
         $step = $this->createKycStep();
+        $step->transitionTo(ActionState::Pending);
+        $step->transitionTo(ActionState::InProgress);
 
-        // Draft → Pending → InProgress → Completed
-        $step->submit();
-        $step->start();
-        $step->complete(new Outcome('Zaakceptowany'));
+        $step->complete(new Outcome('accepted', 'OK'));
 
-        self::assertSame(ActionState::Completed, $step->state());
-        self::assertTrue($step->isAccepted());
+        self::assertFalse($step->isRejected());
         self::assertFalse($step->requiresSupplement());
-    }
-
-    #[Test]
-    public function full_kyc_flow_with_supplement_loop(): void
-    {
-        $step = $this->createKycStep();
-
-        $step->submit();
-        $step->start();
-
-        // First attempt — requires supplement
-        $step->recordOutcome(new Outcome('DoUzupelnienia', reason: 'Brak KRS'));
-        self::assertTrue($step->requiresSupplement());
-
-        // Step still InProgress, awaiting new data
-        self::assertSame(ActionState::InProgress, $step->state());
-
-        // After supplement received, complete
-        $step->complete(new Outcome('Zaakceptowany'));
-        self::assertSame(ActionState::Completed, $step->state());
-    }
-
-    #[Test]
-    public function preserves_initiator_from_blueprint(): void
-    {
-        $step = $this->createKycStep();
-
-        self::assertNotNull($step->initiator());
-        self::assertSame('operator-1', $step->initiator()->partyId);
-        self::assertSame('compliance_officer', $step->initiator()->role);
     }
 
     private function createKycStep(): OnboardingStep
     {
-        $blueprint = new StepBlueprint(
-            stepCode: 'kyc_verify',
-            description: 'Weryfikacja dokumentów KYC',
-            possibleOutcomes: ['Zaakceptowany', 'DoUzupelnienia', 'Odrzucony'],
-        );
+        $blueprint = new StepBlueprint('kyc_doc_verification', 'Weryfikacja dokumentów', [
+            new OutcomeBlueprint('accepted', 'Dokumenty zatwierdzone', OutcomeDirective::advance()),
+            new OutcomeBlueprint('needs_supplement', 'Brakujące dokumenty', OutcomeDirective::retry('kyc_doc_verification')),
+            new OutcomeBlueprint('rejected', 'Dokumenty odrzucone', OutcomeDirective::fail('KYC failed')),
+            new OutcomeBlueprint('suspicious', 'Podejrzenie oszustwa', OutcomeDirective::escalate()),
+        ]);
 
-        return OnboardingStep::fromBlueprint(
-            $blueprint,
-            new PartySignature('operator-1', 'compliance_officer'),
-        );
+        return OnboardingStep::fromBlueprint('step-1', $blueprint, new \DateTimeImmutable());
     }
 }

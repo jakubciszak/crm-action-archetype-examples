@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Onboarding\Infrastructure\Lifecycle;
 
+use Onboarding\Infrastructure\Vendor\KycVendorClient;
 use SharedKernel\Activity\Action;
 use SharedKernel\Activity\ActionState;
 use SharedKernel\Activity\Lifecycle\ActionLifecycleHandler;
@@ -11,34 +12,31 @@ use SharedKernel\Activity\Lifecycle\ActionLifecycleResult;
 use SharedKernel\Activity\Lifecycle\PendingCallback;
 use SharedKernel\Activity\Lifecycle\PendingCallbackRepository;
 
-final readonly class ContractSigningHandler implements ActionLifecycleHandler
+final readonly class KycVendorHandler implements ActionLifecycleHandler
 {
-    private int $counter;
-
     public function __construct(
+        private KycVendorClient $client,
         private PendingCallbackRepository $pendingCallbacks,
-    ) {
-        $this->counter = 0;
-    }
+    ) {}
 
     public function supports(string $actionType, ActionState $from, ActionState $to): bool
     {
-        return $actionType === 'contract_signing'
+        return $actionType === 'kyc_doc_verification'
             && $from === ActionState::Pending
             && $to === ActionState::InProgress;
     }
 
     public function handle(Action $action, ActionState $from, ActionState $to): ActionLifecycleResult
     {
-        $envelopeId = 'ENV-' . str_pad((string) ($this->counter + 1), 3, '0', STR_PAD_LEFT);
+        $verificationId = $this->client->submitVerification($action->id());
 
         $this->pendingCallbacks->store(new PendingCallback(
             actionId: $action->id(),
-            externalReference: $envelopeId,
-            vendor: 'docusign',
-            expectedCallbackBy: new \DateTimeImmutable('+48 hours'),
+            externalReference: $verificationId,
+            vendor: 'kyc_vendor',
+            expectedCallbackBy: new \DateTimeImmutable('+24 hours'),
         ));
 
-        return ActionLifecycleResult::awaitingCallback($envelopeId);
+        return ActionLifecycleResult::awaitingCallback($verificationId);
     }
 }

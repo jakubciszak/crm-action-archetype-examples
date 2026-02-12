@@ -2,12 +2,9 @@
 
 declare(strict_types=1);
 
-namespace CrmArchetype\Onboarding\Infrastructure\Vendor;
+namespace Onboarding\Infrastructure\Vendor;
 
 interface KycVendorClient
 {
-    /**
-     * @param string[] $documentIds
-     */
-    public function submitVerification(array $documentIds, string $callbackUrl): KycSubmissionResult;
+    public function submitVerification(string $actionId): string;
 }

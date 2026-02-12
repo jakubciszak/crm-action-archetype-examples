@@ -2,14 +2,17 @@
 
 declare(strict_types=1);
 
-namespace CrmArchetype\Tests\Loyalty;
+namespace Tests\Loyalty;
 
-use CrmArchetype\Loyalty\IncentiveAction;
-use CrmArchetype\Loyalty\IncentiveActionState;
-use CrmArchetype\Loyalty\IncentiveDecision;
-use CrmArchetype\Loyalty\InvalidIncentiveStateTransitionException;
-use CrmArchetype\Loyalty\JournalEntry;
-use CrmArchetype\Loyalty\RewardGrant;
+use Loyalty\Domain\IncentiveAction;
+use Loyalty\Domain\IncentiveActionState;
+use Loyalty\Domain\IncentiveDecision;
+use Loyalty\Domain\IncentiveRule;
+use Loyalty\Domain\JournalEntry;
+use Loyalty\Domain\PointsDebited;
+use Loyalty\Domain\PointsGranted;
+use Loyalty\Domain\RewardGrant;
+use Loyalty\Domain\RewardGranted;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
@@ -19,135 +22,188 @@ final class IncentiveActionTest extends TestCase
     public function starts_in_received_state(): void
     {
         $action = $this->createAction();
-
         self::assertSame(IncentiveActionState::Received, $action->state());
     }
 
     #[Test]
-    public function happy_path_received_to_settled(): void
+    public function evaluates_with_matching_rule(): void
     {
         $action = $this->createAction();
+        $rule = $this->createMatchingRule(25);
 
-        $action->evaluate();
-        self::assertSame(IncentiveActionState::Evaluating, $action->state());
+        $action->evaluate($rule);
 
-        $decision = new IncentiveDecision(
-            description: 'PointsGranted',
-            journalEntries: [new JournalEntry('acc-1', 150, 'Purchase reward')],
-        );
-
-        $action->settle($decision);
-        self::assertSame(IncentiveActionState::Settled, $action->state());
-        self::assertCount(1, $action->decisions());
-        self::assertSame('PointsGranted', $action->decisions()[0]->description);
+        self::assertSame(IncentiveActionState::AwaitingSettlement, $action->state());
+        self::assertNotNull($action->decision());
     }
 
     #[Test]
-    public function settle_with_reward_grant(): void
+    public function rejects_when_no_rule_matches(): void
     {
         $action = $this->createAction();
-        $action->evaluate();
+        $rule = $this->createNonMatchingRule();
 
-        $decision = new IncentiveDecision(
-            description: 'RewardGrant',
-            rewardGrants: [new RewardGrant('reward-1', 'member-1', 'Free coffee')],
-            domainEvents: [(object) ['type' => 'RewardGranted', 'rewardId' => 'reward-1']],
-        );
-
-        $action->settle($decision);
-
-        self::assertSame(IncentiveActionState::Settled, $action->state());
-        self::assertNotEmpty($action->decisions()[0]->rewardGrants);
-
-        $events = $action->releasedEvents();
-        self::assertCount(1, $events);
-        self::assertSame('RewardGranted', $events[0]->type);
-
-        // Events are cleared after release
-        self::assertEmpty($action->releasedEvents());
-    }
-
-    #[Test]
-    public function rejection_from_evaluating(): void
-    {
-        $action = $this->createAction();
-        $action->evaluate();
-
-        $action->reject('Duplicate transaction');
+        $action->evaluate($rule);
 
         self::assertSame(IncentiveActionState::Rejected, $action->state());
-        self::assertSame('Duplicate transaction', $action->rejectionReason());
+        self::assertNull($action->decision());
     }
 
     #[Test]
-    public function reversal_from_settled_chargeback(): void
+    public function settles_after_evaluation(): void
     {
         $action = $this->createAction();
-        $action->evaluate();
-        $action->settle(new IncentiveDecision('PointsGranted', [new JournalEntry('acc-1', 100, 'Points')]));
+        $rule = $this->createMatchingRule(25);
+
+        $action->evaluate($rule);
+        $action->settle();
+
+        self::assertSame(IncentiveActionState::Settled, $action->state());
+
+        $events = $action->releaseEvents();
+        self::assertCount(1, $events);
+        self::assertInstanceOf(PointsGranted::class, $events[0]);
+    }
+
+    #[Test]
+    public function settle_with_reward(): void
+    {
+        $action = $this->createAction();
+        $rule = $this->createMatchingRuleWithReward(150);
+
+        $action->evaluate($rule);
+        $action->settle();
+
+        $events = $action->releaseEvents();
+        self::assertCount(2, $events);
+        self::assertInstanceOf(PointsGranted::class, $events[0]);
+        self::assertInstanceOf(RewardGranted::class, $events[1]);
+    }
+
+    #[Test]
+    public function cannot_settle_without_decision(): void
+    {
+        $action = $this->createAction();
+
+        $this->expectException(\DomainException::class);
+        $this->expectExceptionMessage('Cannot settle without decision');
+        $action->settle();
+    }
+
+    #[Test]
+    public function reverses_settled_action(): void
+    {
+        $action = $this->createAction();
+        $rule = $this->createMatchingRule(25);
+
+        $action->evaluate($rule);
+        $action->settle();
+        $action->releaseEvents(); // clear settle events
 
         $action->reverse('Chargeback');
 
         self::assertSame(IncentiveActionState::Reversed, $action->state());
-        self::assertSame('Chargeback', $action->reversalReason());
+        $events = $action->releaseEvents();
+        self::assertCount(1, $events);
+        self::assertInstanceOf(PointsDebited::class, $events[0]);
+        self::assertSame('Chargeback', $events[0]->reason);
     }
 
     #[Test]
-    public function cannot_settle_from_received(): void
+    public function cannot_reverse_non_settled_action(): void
     {
         $action = $this->createAction();
+        $rule = $this->createMatchingRule(25);
+        $action->evaluate($rule);
 
-        $this->expectException(InvalidIncentiveStateTransitionException::class);
-        $action->settle(new IncentiveDecision('test'));
+        $this->expectException(\DomainException::class);
+        $this->expectExceptionMessage('Can only reverse settled actions');
+        $action->reverse('reason');
     }
 
     #[Test]
-    public function cannot_reverse_from_evaluating(): void
+    public function cannot_transition_received_to_settled(): void
     {
         $action = $this->createAction();
-        $action->evaluate();
 
-        $this->expectException(InvalidIncentiveStateTransitionException::class);
-        $action->reverse('no reason');
+        $this->expectException(\DomainException::class);
+        $action->settle();
     }
 
     #[Test]
-    public function cannot_reject_from_received(): void
+    public function accessors_return_correct_values(): void
     {
         $action = $this->createAction();
 
-        $this->expectException(InvalidIncentiveStateTransitionException::class);
-        $action->reject('too early');
-    }
-
-    #[Test]
-    public function cannot_evaluate_twice(): void
-    {
-        $action = $this->createAction();
-        $action->evaluate();
-
-        $this->expectException(InvalidIncentiveStateTransitionException::class);
-        $action->evaluate();
-    }
-
-    #[Test]
-    public function accessors(): void
-    {
-        $action = $this->createAction();
-
-        self::assertSame('ia-1', $action->id());
-        self::assertSame('Purchase: 500 PLN', $action->description());
-        self::assertSame('member-1', $action->memberId());
-        self::assertSame('purchases', $action->category());
+        self::assertSame('ACT-001', $action->id());
+        self::assertSame('order_placed', $action->actionType());
+        self::assertSame('USR-001', $action->participantId());
+        self::assertArrayHasKey('totalAmountCents', $action->payload());
     }
 
     private function createAction(): IncentiveAction
     {
         return new IncentiveAction(
-            id: 'ia-1',
-            description: 'Purchase: 500 PLN',
-            memberId: 'member-1',
-            category: 'purchases',
+            id: 'ACT-001',
+            actionType: 'order_placed',
+            payload: ['totalAmountCents' => 25000, 'orderId' => 'ORD-001'],
+            participantId: 'USR-001',
+            occurredAt: new \DateTimeImmutable(),
         );
+    }
+
+    private function createMatchingRule(int $points): IncentiveRule
+    {
+        return new class($points) implements IncentiveRule {
+            public function __construct(private readonly int $points) {}
+
+            public function supports(string $actionType): bool
+            {
+                return $actionType === 'order_placed';
+            }
+
+            public function evaluate(IncentiveAction $action): IncentiveDecision
+            {
+                return new IncentiveDecision(
+                    journalEntries: [new JournalEntry(points: $this->points, reason: 'Test order')],
+                    rewardGrants: [],
+                );
+            }
+        };
+    }
+
+    private function createMatchingRuleWithReward(int $points): IncentiveRule
+    {
+        return new class($points) implements IncentiveRule {
+            public function __construct(private readonly int $points) {}
+
+            public function supports(string $actionType): bool
+            {
+                return $actionType === 'order_placed';
+            }
+
+            public function evaluate(IncentiveAction $action): IncentiveDecision
+            {
+                return new IncentiveDecision(
+                    journalEntries: [new JournalEntry(points: $this->points, reason: 'Test order')],
+                    rewardGrants: [new RewardGrant('free_shipping', 'Darmowa dostawa')],
+                );
+            }
+        };
+    }
+
+    private function createNonMatchingRule(): IncentiveRule
+    {
+        return new class implements IncentiveRule {
+            public function supports(string $actionType): bool
+            {
+                return false;
+            }
+
+            public function evaluate(IncentiveAction $action): IncentiveDecision
+            {
+                throw new \LogicException('Should not be called');
+            }
+        };
     }
 }

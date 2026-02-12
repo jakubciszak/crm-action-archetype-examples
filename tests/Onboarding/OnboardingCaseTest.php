@@ -2,117 +2,152 @@
 
 declare(strict_types=1);
 
-namespace CrmArchetype\Tests\Onboarding;
+namespace Tests\Onboarding;
 
-use CrmArchetype\Archetype\Outcome;
-use CrmArchetype\Archetype\PartySignature;
-use CrmArchetype\Onboarding\OnboardingCase;
-use CrmArchetype\Onboarding\OnboardingPhase;
-use CrmArchetype\Onboarding\OnboardingStep;
-use CrmArchetype\Onboarding\StepBlueprint;
+use Onboarding\Domain\OnboardingCase;
+use Onboarding\Domain\OnboardingState;
+use Onboarding\Domain\ScenarioResolver;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SharedKernel\Activity\Event\ProcessCompleted;
+use SharedKernel\Activity\Event\StageAdvanced;
+use SharedKernel\Activity\Event\StepCompleted;
+use SharedKernel\Activity\Outcome;
+use SharedKernel\Activity\OutcomeDirectiveType;
+use SharedKernel\Activity\PartySignature;
 
 final class OnboardingCaseTest extends TestCase
 {
     #[Test]
-    public function full_onboarding_flow_with_phases(): void
+    public function creates_from_enterprise_scenario(): void
     {
-        $case = new OnboardingCase(
-            title: 'Onboarding Acme Corp',
-            briefDescription: 'Enterprise onboarding',
-            raisedBy: 'sales-1',
-            priority: 'high',
-        );
+        $case = $this->createEnterpriseCase();
 
-        // Phase 1: KYC
-        $kycPhase = new OnboardingPhase('KYC', 'Weryfikacja KYC');
-        $kycStep = OnboardingStep::fromBlueprint(
-            new StepBlueprint('kyc', 'Weryfikacja dokumentów', ['Zaakceptowany', 'DoUzupelnienia', 'Odrzucony']),
-            new PartySignature('op-1', 'compliance'),
-        );
-        $kycPhase->addStep($kycStep);
-        $case->addPhase($kycPhase);
-
-        // Phase 2: Contract
-        $contractPhase = new OnboardingPhase('Umowa', 'Podpisanie umowy');
-        $contractStep = OnboardingStep::fromBlueprint(
-            new StepBlueprint('contract_sign', 'Podpisanie umowy', ['Podpisano', 'Odrzucono']),
-            new PartySignature('op-2', 'legal'),
-        );
-        $contractPhase->addStep($contractStep);
-        $case->addPhase($contractPhase);
-
-        self::assertTrue($case->isOpen());
-        self::assertCount(2, $case->phases());
-        self::assertSame($kycPhase, $case->currentPhase());
-        self::assertFalse($case->allPhasesCompleted());
-
-        // Complete KYC phase
-        $kycStep->submit();
-        $kycStep->start();
-        $kycStep->complete(new Outcome('Zaakceptowany'));
-        self::assertTrue($kycPhase->allStepsCompleted());
-        $kycPhase->close();
-
-        // Now current phase should be Contract
-        self::assertSame($contractPhase, $case->currentPhase());
-
-        // Complete Contract phase
-        $contractStep->submit();
-        $contractStep->start();
-        $contractStep->complete(new Outcome('Podpisano'));
-        $contractPhase->close();
-
-        self::assertTrue($case->allPhasesCompleted());
-        self::assertNull($case->currentPhase());
-
-        $case->close();
-        self::assertFalse($case->isOpen());
+        self::assertSame(OnboardingState::Pending, $case->state());
+        self::assertCount(4, $case->stages());
+        self::assertSame('kyc', $case->currentStage()->stageCode());
     }
 
     #[Test]
-    public function phase_tracks_supplement_requirement(): void
+    public function full_enterprise_onboarding_flow(): void
     {
-        $phase = new OnboardingPhase('KYC', 'Weryfikacja');
-        $step = OnboardingStep::fromBlueprint(
-            new StepBlueprint('kyc', 'Verify', ['OK', 'DoUzupelnienia']),
-            new PartySignature('op', 'compliance'),
+        $case = $this->createEnterpriseCase();
+
+        // KYC
+        $case->startStep('kyc', 'kyc_doc_verification');
+        self::assertSame(OnboardingState::InProgress, $case->state());
+
+        $vendorSig = new PartySignature('kyc_vendor', 'vendor');
+        $directives = $case->completeStep(
+            'kyc', 'kyc_doc_verification',
+            new Outcome('accepted', 'OK', approver: $vendorSig),
+            $vendorSig,
         );
-        $phase->addStep($step);
+        self::assertSame(OutcomeDirectiveType::AdvanceStage, $directives[0]->type);
+        self::assertSame('contract', $case->currentStage()->stageCode());
 
-        self::assertFalse($phase->hasSupplementRequired());
+        // Contract
+        $case->startStep('contract', 'contract_signing');
+        $directives = $case->completeStep(
+            'contract', 'contract_signing',
+            new Outcome('signed', 'OK'),
+        );
+        self::assertSame(OutcomeDirectiveType::AdvanceStage, $directives[0]->type);
+        self::assertSame('provisioning', $case->currentStage()->stageCode());
 
-        $step->recordOutcome(new Outcome('DoUzupelnienia', reason: 'Missing docs'));
+        // Provisioning
+        $case->startStep('provisioning', 'env_provisioning');
+        $directives = $case->completeStep(
+            'provisioning', 'env_provisioning',
+            new Outcome('provisioned', 'OK'),
+        );
+        self::assertSame(OutcomeDirectiveType::AdvanceStage, $directives[0]->type);
+        self::assertSame('activation', $case->currentStage()->stageCode());
 
-        self::assertTrue($phase->hasSupplementRequired());
+        // Activation
+        $case->startStep('activation', 'account_activation');
+        $directives = $case->completeStep(
+            'activation', 'account_activation',
+            new Outcome('activated', 'OK'),
+        );
+        self::assertSame(OutcomeDirectiveType::CompleteProcess, $directives[0]->type);
+        self::assertTrue($case->isComplete());
+
+        // Events
+        $events = $case->releaseEvents();
+        $stepCompleted = array_filter($events, fn($e) => $e instanceof StepCompleted);
+        $stageAdvanced = array_filter($events, fn($e) => $e instanceof StageAdvanced);
+        $processCompleted = array_filter($events, fn($e) => $e instanceof ProcessCompleted);
+
+        self::assertCount(4, $stepCompleted);
+        self::assertCount(3, $stageAdvanced);
+        self::assertCount(1, $processCompleted);
     }
 
     #[Test]
-    public function empty_phase_is_not_completed(): void
+    public function kyc_rejection_fails_process(): void
     {
-        $phase = new OnboardingPhase('Empty');
+        $case = $this->createEnterpriseCase();
 
-        self::assertFalse($phase->allStepsCompleted());
+        $case->startStep('kyc', 'kyc_doc_verification');
+        $directives = $case->completeStep(
+            'kyc', 'kyc_doc_verification',
+            new Outcome('rejected', 'Dokumenty odrzucone'),
+        );
+
+        self::assertSame(OutcomeDirectiveType::FailProcess, $directives[0]->type);
+        self::assertSame(OnboardingState::Failed, $case->state());
     }
 
     #[Test]
-    public function empty_case_has_no_phases_completed(): void
+    public function sme_onboarding_has_two_stages(): void
     {
-        $case = new OnboardingCase('Test', 'desc', 'user-1');
+        $resolver = new ScenarioResolver();
+        $scenario = $resolver->resolve('sme');
+        $case = OnboardingCase::fromScenario('CASE-SME', 'Small Corp', 'sme', $scenario);
 
-        self::assertFalse($case->allPhasesCompleted());
-        self::assertNull($case->currentPhase());
+        self::assertCount(2, $case->stages());
+        self::assertSame('kyc', $case->currentStage()->stageCode());
     }
 
     #[Test]
-    public function phases_are_also_registered_as_threads(): void
+    public function sme_full_flow(): void
     {
-        $case = new OnboardingCase('Test', 'desc', 'user-1');
-        $phase = new OnboardingPhase('KYC');
-        $case->addPhase($phase);
+        $resolver = new ScenarioResolver();
+        $scenario = $resolver->resolve('sme');
+        $case = OnboardingCase::fromScenario('CASE-SME', 'Small Corp', 'sme', $scenario);
 
-        self::assertCount(1, $case->threads());
-        self::assertCount(1, $case->phases());
+        $case->startStep('kyc', 'auto_kyc');
+        $case->completeStep('kyc', 'auto_kyc', new Outcome('accepted', 'KYC OK'));
+
+        $case->startStep('activation', 'account_activation');
+        $case->completeStep('activation', 'account_activation', new Outcome('activated', 'OK'));
+
+        self::assertTrue($case->isComplete());
+    }
+
+    #[Test]
+    public function throws_on_unknown_stage(): void
+    {
+        $case = $this->createEnterpriseCase();
+
+        $this->expectException(\DomainException::class);
+        $case->startStep('nonexistent', 'step');
+    }
+
+    #[Test]
+    public function throws_on_unknown_step(): void
+    {
+        $case = $this->createEnterpriseCase();
+
+        $this->expectException(\DomainException::class);
+        $case->startStep('kyc', 'nonexistent');
+    }
+
+    private function createEnterpriseCase(): OnboardingCase
+    {
+        $resolver = new ScenarioResolver();
+        $scenario = $resolver->resolve('enterprise');
+        return OnboardingCase::fromScenario('CASE-001', 'Acme Corp', 'enterprise', $scenario);
     }
 }
