@@ -19,12 +19,30 @@ final readonly class OrderPointsRule implements IncentiveRule
 
     public function evaluate(IncentiveAction $action): IncentiveDecision
     {
-        $amount = $action->payload()['totalAmountCents'];
-        $points = intdiv($amount, 1000); // 1 punkt za 10 zł
+        $payload = $action->payload();
+        $orderId = $payload['orderId'];
+        $lines = $payload['lines'] ?? [];
+
+        $entries = [];
+        $totalPoints = 0;
+
+        foreach ($lines as $line) {
+            $linePoints = intdiv($line['amountCents'], 1000); // 1 pkt per 10 zł
+            $totalPoints += $linePoints;
+            $entries[] = new JournalEntry(
+                points: $linePoints,
+                reason: "Order {$orderId}, line {$line['lineId']}",
+                orderId: $orderId,
+                lineId: $line['lineId'],
+                productName: $line['productName'] ?? null,
+            );
+        }
 
         return new IncentiveDecision(
-            journalEntries: [new JournalEntry(points: $points, reason: "Order {$action->payload()['orderId']}")],
-            rewardGrants: $points >= 100 ? [new RewardGrant('free_shipping', 'Darmowa dostawa')] : [],
+            journalEntries: $entries,
+            rewardGrants: $totalPoints >= 100
+                ? [new RewardGrant('free_shipping', 'Darmowa dostawa')]
+                : [],
         );
     }
 }

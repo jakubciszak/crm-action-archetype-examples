@@ -6,107 +6,154 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 use Loyalty\Domain\IncentiveAction;
 use Loyalty\Domain\LoyaltyCampaign;
+use Loyalty\Domain\PointsDebitedForReturn;
+use Loyalty\Domain\PointWallet;
+use Loyalty\Domain\WalletEntryStatus;
 use Loyalty\Infrastructure\InMemoryLoyaltyCampaignRepository;
 use Loyalty\Infrastructure\Rules\OrderPointsRule;
 use Loyalty\Infrastructure\Rules\ReferralBonusRule;
 
-echo "=== PROGRAM LOJALNOŚCIOWY ===\n\n";
+echo "=== PROGRAM LOJALNOŚCIOWY (portfel pending → active) ===\n\n";
 
 // --- Wiring ---
 $campaignRepo = new InMemoryLoyaltyCampaignRepository();
 $rules = [new OrderPointsRule(), new ReferralBonusRule()];
+$now = new \DateTimeImmutable('2025-05-12 10:00:00');
 
-// 1. Kampania
+// 1. Kampania + portfel
 $campaign = new LoyaltyCampaign('CAMP-001', 'Wiosna 2025');
 $campaignRepo->save($campaign);
-echo "1. Kampania: \"Wiosna 2025\"\n\n";
+$wallet = new PointWallet('USR-001');
 
-// 2. Zakup 250 zł
-echo "2. Zdarzenie: Zakup 250 zł (participantId: USR-001)\n";
-$action1 = new IncentiveAction(
+echo "1. Kampania: \"Wiosna 2025\", portfel USR-001 utworzony\n\n";
+
+// ─── 2. Zamówienie ORD-001 (3 produkty) ───
+echo "2. Zamówienie ORD-001 (3 produkty, return period: 14 dni):\n";
+$orderAction = new IncentiveAction(
     id: 'ACT-001',
     actionType: 'order_placed',
-    payload: ['totalAmountCents' => 25000, 'orderId' => 'ORD-001'],
+    payload: [
+        'orderId' => 'ORD-001',
+        'lines' => [
+            ['lineId' => 'L1', 'productName' => 'Laptop Dell XPS',   'amountCents' => 300000],
+            ['lineId' => 'L2', 'productName' => 'Mysz Logitech MX',  'amountCents' => 15000],
+            ['lineId' => 'L3', 'productName' => 'Klawiatura Keychron','amountCents' => 35000],
+        ],
+    ],
     participantId: 'USR-001',
-    occurredAt: new \DateTimeImmutable(),
+    occurredAt: $now,
 );
-$action1->evaluate(...$rules);
-$action1->settle();
-$campaign->recordAction($action1);
+$orderAction->evaluate(...$rules);
+$orderAction->settle();
+$campaign->recordAction($orderAction);
 
-$events1 = $action1->releaseEvents();
-$points1 = $action1->decision()->journalEntries[0]->points;
-echo "   → IncentiveAction created (type: order_placed)\n";
-echo "   → OrderPointsRule: {$points1} punktów\n";
-echo "   → Settled → " . (new \ReflectionClass($events1[0]))->getShortName() . " event\n\n";
+// Punkty z zamówienia → PENDING w portfelu
+$wallet->creditPendingFromOrder('ORD-001', $orderAction->decision()->journalEntries);
 
-// 3. Polecenie znajomego
-echo "3. Zdarzenie: Polecenie znajomego (participantId: USR-001)\n";
-$action2 = new IncentiveAction(
+echo "   Linie zamówienia:\n";
+foreach ($orderAction->decision()->journalEntries as $entry) {
+    echo "   → {$entry->lineId}: {$entry->productName}";
+    $amountZl = 0;
+    foreach ($orderAction->payload()['lines'] as $line) {
+        if ($line['lineId'] === $entry->lineId) {
+            $amountZl = $line['amountCents'] / 100;
+        }
+    }
+    echo " ({$amountZl} zł → {$entry->points} pkt)\n";
+}
+$totalOrderPts = array_sum(array_map(fn($e) => $e->points, $orderAction->decision()->journalEntries));
+echo "   Razem: {$totalOrderPts} pkt → PENDING (return period do {$now->modify('+14 days')->format('Y-m-d')})\n";
+
+// Nagroda?
+if ($orderAction->decision()->rewardGrants !== []) {
+    echo "   + nagroda: \"{$orderAction->decision()->rewardGrants[0]->description}\"\n";
+}
+echo "\n";
+
+// ─── 3. Polecenie znajomego ───
+echo "3. Polecenie znajomego (USR-001 → USR-002):\n";
+$referralAction = new IncentiveAction(
     id: 'ACT-002',
     actionType: 'referral',
     payload: ['referredUserId' => 'USR-002'],
     participantId: 'USR-001',
-    occurredAt: new \DateTimeImmutable(),
+    occurredAt: $now,
 );
-$action2->evaluate(...$rules);
-$action2->settle();
-$campaign->recordAction($action2);
+$referralAction->evaluate(...$rules);
+$referralAction->settle();
+$campaign->recordAction($referralAction);
 
-$events2 = $action2->releaseEvents();
-$points2 = $action2->decision()->journalEntries[0]->points;
-echo "   → ReferralBonusRule: {$points2} punktów bonus\n";
-echo "   → Settled → " . (new \ReflectionClass($events2[0]))->getShortName() . " event\n\n";
+// Punkty z referrala → od razu ACTIVE, wygasają za 3 miesiące
+$referralEntry = $referralAction->decision()->journalEntries[0];
+$referralExpiresAt = $now->modify('+3 months');
+$wallet->creditActive($referralEntry, $referralExpiresAt);
 
-// 4. Zakup 1500 zł
-echo "4. Zdarzenie: Zakup 1500 zł (participantId: USR-001)\n";
-$action3 = new IncentiveAction(
-    id: 'ACT-003',
-    actionType: 'order_placed',
-    payload: ['totalAmountCents' => 150000, 'orderId' => 'ORD-002'],
-    participantId: 'USR-001',
-    occurredAt: new \DateTimeImmutable(),
-);
-$action3->evaluate(...$rules);
-$action3->settle();
-$campaign->recordAction($action3);
+echo "   → ReferralBonusRule: {$referralEntry->points} pkt → ACTIVE (wygasa: {$referralExpiresAt->format('Y-m-d')})\n\n";
 
-$events3 = $action3->releaseEvents();
-$points3 = $action3->decision()->journalEntries[0]->points;
-$rewardCount = count($action3->decision()->rewardGrants);
-echo "   → OrderPointsRule: {$points3} punktów + nagroda \"Darmowa dostawa\"\n";
-echo "   → Settled → ";
-$eventNames = array_map(fn($e) => (new \ReflectionClass($e))->getShortName(), $events3);
-echo implode(' + ', $eventNames) . " events\n\n";
+// ─── 4. Portfel po 2 zdarzeniach ───
+echo "4. Portfel po 2 zdarzeniach:\n";
+echo "   PENDING: {$wallet->pendingBalance()} pkt\n";
+foreach ($wallet->entriesByStatus(WalletEntryStatus::Pending) as $e) {
+    echo "     • {$e->orderId}/{$e->lineId} {$e->productName}: {$e->points} pkt\n";
+}
+echo "   ACTIVE:  {$wallet->activeBalance()} pkt\n";
+foreach ($wallet->entriesByStatus(WalletEntryStatus::Active) as $e) {
+    echo "     • {$e->reason}: {$e->points} pkt (wygasa: {$e->expiresAt()->format('Y-m-d')})\n";
+}
+echo "   RAZEM:   " . ($wallet->pendingBalance() + $wallet->activeBalance()) . " pkt";
+echo " (w tym {$wallet->activeBalance()} dostępnych)\n\n";
 
-// 5. Bilans przed chargebackiem
-$orderStream = $campaign->findStream('order_placed');
-$referralStream = $campaign->findStream('referral');
-$totalBefore = $orderStream->totalSettledPoints() + $referralStream->totalSettledPoints();
-echo "5. Bilans przed chargebackiem:\n";
-echo "   → order_placed: {$orderStream->totalSettledPoints()} pkt (settled)\n";
-echo "   → referral:     {$referralStream->totalSettledPoints()} pkt (settled)\n";
-echo "   → RAZEM:        {$totalBefore} pkt\n\n";
-
-// 6. Chargeback
-echo "6. Chargeback: cofnięcie zakupu ORD-002 (150 pkt)\n";
-$action3->reverse('Chargeback - zwrot zamówienia ORD-002');
-$events4 = $action3->releaseEvents();
-foreach ($events4 as $event) {
-    $eventName = (new \ReflectionClass($event))->getShortName();
-    echo "   → {$eventName}";
-    if ($event instanceof \Loyalty\Domain\PointsDebited) {
-        echo " (participantId: {$event->participantId}, -{$event->entry->points} pkt, reason: {$event->reason})";
+// ─── 5. Zwrot produktu: Mysz Logitech MX ───
+echo "5. Zwrot produktu: Mysz Logitech MX (ORD-001/L2, 15 pkt) w okresie zwrotów:\n";
+$debitedPoints = $wallet->debitForReturn('ORD-001', 'L2');
+$walletEvents = $wallet->releaseEvents();
+foreach ($walletEvents as $event) {
+    if ($event instanceof PointsDebitedForReturn) {
+        echo "   → PointsDebitedForReturn: -{$event->points} pkt";
+        echo " ({$event->orderId}/{$event->lineId} {$event->productName})\n";
     }
-    echo "\n";
+}
+echo "   PENDING po zwrocie: {$wallet->pendingBalance()} pkt\n\n";
+
+// ─── 6. Koniec okresu zwrotów ORD-001 ───
+$returnPeriodEnd = $now->modify('+14 days');
+$orderExpiresAt = $returnPeriodEnd->modify('+6 months');
+echo "6. Koniec okresu zwrotów ORD-001 ({$returnPeriodEnd->format('Y-m-d')}):\n";
+$activatedPts = $wallet->activateOrder('ORD-001', $orderExpiresAt);
+echo "   → {$activatedPts} pkt: PENDING → ACTIVE (wygasa: {$orderExpiresAt->format('Y-m-d')})\n\n";
+
+// ─── 7. Portfel końcowy ───
+echo "7. Portfel końcowy:\n";
+echo "   ACTIVE: {$wallet->activeBalance()} pkt\n";
+foreach ($wallet->entriesByStatus(WalletEntryStatus::Active) as $e) {
+    $source = $e->orderId
+        ? "{$e->orderId}/{$e->lineId} {$e->productName}"
+        : $e->reason;
+    echo "     • {$source}: {$e->points} pkt (wygasa: {$e->expiresAt()->format('Y-m-d')})\n";
+}
+echo "   PENDING: {$wallet->pendingBalance()} pkt\n";
+
+$debitedEntries = $wallet->entriesByStatus(WalletEntryStatus::Debited);
+if ($debitedEntries !== []) {
+    $debitedSum = array_sum(array_map(fn($e) => $e->points, $debitedEntries));
+    echo "   DEBITED: {$debitedSum} pkt (zwroty)\n";
+    foreach ($debitedEntries as $e) {
+        echo "     • {$e->orderId}/{$e->lineId} {$e->productName}: {$e->points} pkt\n";
+    }
 }
 
-// 7. Bilans po chargebacku
-$totalAfter = $orderStream->totalSettledPoints() + $referralStream->totalSettledPoints();
-echo "\n7. Bilans po chargebacku:\n";
-echo "   → order_placed: {$orderStream->totalSettledPoints()} pkt (settled)\n";
-echo "   → referral:     {$referralStream->totalSettledPoints()} pkt (settled)\n";
-echo "   → RAZEM:        {$totalAfter} pkt (było {$totalBefore}, odjęto {$points3})\n";
+// ─── 8. Symulacja upływu czasu — wygaśnięcie referrala po 3 miesiącach ───
+echo "\n8. Symulacja: +4 miesiące ({$now->modify('+4 months')->format('Y-m-d')}):\n";
+$future = $now->modify('+4 months');
+$expiredPts = $wallet->expireEntries($future);
+echo "   → Wygasło: {$expiredPts} pkt (referral, 3-miesięczna ważność)\n";
+echo "   ACTIVE po wygaśnięciu: {$wallet->activeBalance()} pkt\n";
+foreach ($wallet->entriesByStatus(WalletEntryStatus::Active) as $e) {
+    $source = $e->orderId
+        ? "{$e->orderId}/{$e->lineId} {$e->productName}"
+        : $e->reason;
+    echo "     • {$source}: {$e->points} pkt (wygasa: {$e->expiresAt()->format('Y-m-d')})\n";
+}
 
 $campaignRepo->save($campaign);
 

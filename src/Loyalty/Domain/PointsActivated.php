@@ -4,13 +4,12 @@ declare(strict_types=1);
 
 namespace Loyalty\Domain;
 
-final readonly class JournalEntry
+final readonly class PointsActivated
 {
     public function __construct(
+        public string $participantId,
         public int $points,
         public string $reason,
-        public ?string $orderId = null,
-        public ?string $lineId = null,
-        public ?string $productName = null,
+        public \DateTimeImmutable $expiresAt,
     ) {}
 }

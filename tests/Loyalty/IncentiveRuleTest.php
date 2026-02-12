@@ -22,32 +22,47 @@ final class IncentiveRuleTest extends TestCase
     }
 
     #[Test]
-    public function order_points_rule_calculates_1_point_per_10_zl(): void
+    public function order_points_rule_creates_entry_per_line(): void
     {
         $rule = new OrderPointsRule();
         $action = new IncentiveAction(
             id: 'ACT-001',
             actionType: 'order_placed',
-            payload: ['totalAmountCents' => 25000, 'orderId' => 'ORD-001'],
+            payload: [
+                'orderId' => 'ORD-001',
+                'lines' => [
+                    ['lineId' => 'L1', 'productName' => 'Product A', 'amountCents' => 15000],
+                    ['lineId' => 'L2', 'productName' => 'Product B', 'amountCents' => 10000],
+                ],
+            ],
             participantId: 'USR-001',
             occurredAt: new \DateTimeImmutable(),
         );
 
         $decision = $rule->evaluate($action);
 
-        self::assertCount(1, $decision->journalEntries);
-        self::assertSame(25, $decision->journalEntries[0]->points);
+        self::assertCount(2, $decision->journalEntries);
+        self::assertSame(15, $decision->journalEntries[0]->points);
+        self::assertSame('L1', $decision->journalEntries[0]->lineId);
+        self::assertSame('Product A', $decision->journalEntries[0]->productName);
+        self::assertSame(10, $decision->journalEntries[1]->points);
+        self::assertSame('L2', $decision->journalEntries[1]->lineId);
         self::assertCount(0, $decision->rewardGrants);
     }
 
     #[Test]
-    public function order_points_rule_grants_reward_at_100_points(): void
+    public function order_points_rule_grants_reward_when_total_over_100(): void
     {
         $rule = new OrderPointsRule();
         $action = new IncentiveAction(
             id: 'ACT-002',
             actionType: 'order_placed',
-            payload: ['totalAmountCents' => 150000, 'orderId' => 'ORD-002'],
+            payload: [
+                'orderId' => 'ORD-002',
+                'lines' => [
+                    ['lineId' => 'L1', 'productName' => 'Expensive', 'amountCents' => 150000],
+                ],
+            ],
             participantId: 'USR-001',
             occurredAt: new \DateTimeImmutable(),
         );
@@ -60,21 +75,52 @@ final class IncentiveRuleTest extends TestCase
     }
 
     #[Test]
-    public function order_points_rule_no_reward_below_100_points(): void
+    public function order_points_rule_no_reward_below_100_total(): void
     {
         $rule = new OrderPointsRule();
         $action = new IncentiveAction(
             id: 'ACT-003',
             actionType: 'order_placed',
-            payload: ['totalAmountCents' => 99000, 'orderId' => 'ORD-003'],
+            payload: [
+                'orderId' => 'ORD-003',
+                'lines' => [
+                    ['lineId' => 'L1', 'productName' => 'Cheap', 'amountCents' => 50000],
+                    ['lineId' => 'L2', 'productName' => 'Also cheap', 'amountCents' => 49000],
+                ],
+            ],
             participantId: 'USR-001',
             occurredAt: new \DateTimeImmutable(),
         );
 
         $decision = $rule->evaluate($action);
 
-        self::assertSame(99, $decision->journalEntries[0]->points);
+        $totalPts = array_sum(array_map(fn($e) => $e->points, $decision->journalEntries));
+        self::assertSame(99, $totalPts);
         self::assertCount(0, $decision->rewardGrants);
+    }
+
+    #[Test]
+    public function order_points_rule_stores_order_id_on_entries(): void
+    {
+        $rule = new OrderPointsRule();
+        $action = new IncentiveAction(
+            id: 'ACT-004',
+            actionType: 'order_placed',
+            payload: [
+                'orderId' => 'ORD-004',
+                'lines' => [
+                    ['lineId' => 'L1', 'productName' => 'Widget', 'amountCents' => 20000],
+                ],
+            ],
+            participantId: 'USR-001',
+            occurredAt: new \DateTimeImmutable(),
+        );
+
+        $decision = $rule->evaluate($action);
+
+        self::assertSame('ORD-004', $decision->journalEntries[0]->orderId);
+        self::assertSame('L1', $decision->journalEntries[0]->lineId);
+        self::assertSame('Widget', $decision->journalEntries[0]->productName);
     }
 
     #[Test]
@@ -91,7 +137,7 @@ final class IncentiveRuleTest extends TestCase
     {
         $rule = new ReferralBonusRule();
         $action = new IncentiveAction(
-            id: 'ACT-004',
+            id: 'ACT-005',
             actionType: 'referral',
             payload: ['referredUserId' => 'USR-002'],
             participantId: 'USR-001',
@@ -102,6 +148,7 @@ final class IncentiveRuleTest extends TestCase
 
         self::assertCount(1, $decision->journalEntries);
         self::assertSame(50, $decision->journalEntries[0]->points);
+        self::assertNull($decision->journalEntries[0]->orderId);
         self::assertCount(0, $decision->rewardGrants);
     }
 }
