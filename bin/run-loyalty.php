@@ -79,12 +79,34 @@ echo "   → Settled → ";
 $eventNames = array_map(fn($e) => (new \ReflectionClass($e))->getShortName(), $events3);
 echo implode(' + ', $eventNames) . " events\n\n";
 
-// 5. Chargeback
-echo "5. Chargeback: cofnięcie zakupu #2\n";
+// 5. Bilans przed chargebackiem
+$orderStream = $campaign->findStream('order_placed');
+$referralStream = $campaign->findStream('referral');
+$totalBefore = $orderStream->totalSettledPoints() + $referralStream->totalSettledPoints();
+echo "5. Bilans przed chargebackiem:\n";
+echo "   → order_placed: {$orderStream->totalSettledPoints()} pkt (settled)\n";
+echo "   → referral:     {$referralStream->totalSettledPoints()} pkt (settled)\n";
+echo "   → RAZEM:        {$totalBefore} pkt\n\n";
+
+// 6. Chargeback
+echo "6. Chargeback: cofnięcie zakupu ORD-002 (150 pkt)\n";
 $action3->reverse('Chargeback - zwrot zamówienia ORD-002');
 $events4 = $action3->releaseEvents();
-$eventName = (new \ReflectionClass($events4[0]))->getShortName();
-echo "   → Reversed → {$eventName} event ({$points3} punktów cofnięte)\n";
+foreach ($events4 as $event) {
+    $eventName = (new \ReflectionClass($event))->getShortName();
+    echo "   → {$eventName}";
+    if ($event instanceof \Loyalty\Domain\PointsDebited) {
+        echo " (participantId: {$event->participantId}, -{$event->entry->points} pkt, reason: {$event->reason})";
+    }
+    echo "\n";
+}
+
+// 7. Bilans po chargebacku
+$totalAfter = $orderStream->totalSettledPoints() + $referralStream->totalSettledPoints();
+echo "\n7. Bilans po chargebacku:\n";
+echo "   → order_placed: {$orderStream->totalSettledPoints()} pkt (settled)\n";
+echo "   → referral:     {$referralStream->totalSettledPoints()} pkt (settled)\n";
+echo "   → RAZEM:        {$totalAfter} pkt (było {$totalBefore}, odjęto {$points3})\n";
 
 $campaignRepo->save($campaign);
 
