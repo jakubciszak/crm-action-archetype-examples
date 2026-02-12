@@ -15,9 +15,9 @@ final class WalletEntry
         public readonly string $sourceType,
         public readonly string $reason,
         public readonly \DateTimeImmutable $createdAt,
-        public readonly ?string $orderId = null,
-        public readonly ?string $lineId = null,
-        public readonly ?string $productName = null,
+        public readonly ?string $sourceRef = null,
+        public readonly ?string $sourceItemRef = null,
+        public readonly ?string $label = null,
         ?\DateTimeImmutable $expiresAt = null,
     ) {
         $this->status = $status;

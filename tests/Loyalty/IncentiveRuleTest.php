@@ -43,10 +43,10 @@ final class IncentiveRuleTest extends TestCase
 
         self::assertCount(2, $decision->journalEntries);
         self::assertSame(15, $decision->journalEntries[0]->points);
-        self::assertSame('L1', $decision->journalEntries[0]->lineId);
-        self::assertSame('Product A', $decision->journalEntries[0]->productName);
+        self::assertSame('L1', $decision->journalEntries[0]->sourceItemRef);
+        self::assertSame('Product A', $decision->journalEntries[0]->label);
         self::assertSame(10, $decision->journalEntries[1]->points);
-        self::assertSame('L2', $decision->journalEntries[1]->lineId);
+        self::assertSame('L2', $decision->journalEntries[1]->sourceItemRef);
         self::assertCount(0, $decision->rewardGrants);
     }
 
@@ -100,7 +100,7 @@ final class IncentiveRuleTest extends TestCase
     }
 
     #[Test]
-    public function order_points_rule_stores_order_id_on_entries(): void
+    public function order_points_rule_stores_source_ref_on_entries(): void
     {
         $rule = new OrderPointsRule();
         $action = new IncentiveAction(
@@ -118,9 +118,9 @@ final class IncentiveRuleTest extends TestCase
 
         $decision = $rule->evaluate($action);
 
-        self::assertSame('ORD-004', $decision->journalEntries[0]->orderId);
-        self::assertSame('L1', $decision->journalEntries[0]->lineId);
-        self::assertSame('Widget', $decision->journalEntries[0]->productName);
+        self::assertSame('ORD-004', $decision->journalEntries[0]->sourceRef);
+        self::assertSame('L1', $decision->journalEntries[0]->sourceItemRef);
+        self::assertSame('Widget', $decision->journalEntries[0]->label);
     }
 
     #[Test]
@@ -148,7 +148,7 @@ final class IncentiveRuleTest extends TestCase
 
         self::assertCount(1, $decision->journalEntries);
         self::assertSame(50, $decision->journalEntries[0]->points);
-        self::assertNull($decision->journalEntries[0]->orderId);
+        self::assertNull($decision->journalEntries[0]->sourceRef);
         self::assertCount(0, $decision->rewardGrants);
     }
 }

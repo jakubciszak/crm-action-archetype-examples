@@ -22,26 +22,26 @@ final class PointWallet
     }
 
     /**
-     * Add points from order lines as PENDING (waiting for return period to expire).
+     * Add points as PENDING (waiting for deferral period to expire).
      *
-     * @param JournalEntry[] $lineEntries
+     * @param JournalEntry[] $entries
      */
-    public function creditPendingFromOrder(string $orderId, array $lineEntries): void
+    public function creditPending(string $sourceRef, array $entries): void
     {
-        foreach ($lineEntries as $entry) {
+        foreach ($entries as $entry) {
             $walletEntry = new WalletEntry(
                 points: $entry->points,
                 status: WalletEntryStatus::Pending,
-                sourceType: 'order',
+                sourceType: 'deferred',
                 reason: $entry->reason,
                 createdAt: new \DateTimeImmutable(),
-                orderId: $orderId,
-                lineId: $entry->lineId,
-                productName: $entry->productName,
+                sourceRef: $sourceRef,
+                sourceItemRef: $entry->sourceItemRef,
+                label: $entry->label,
             );
             $this->entries[] = $walletEntry;
             $this->domainEvents[] = new PointsPending(
-                $this->participantId, $orderId, $entry->lineId, $entry->points, $entry->productName,
+                $this->participantId, $sourceRef, $entry->sourceItemRef, $entry->points, $entry->label,
             );
         }
     }
@@ -54,9 +54,11 @@ final class PointWallet
         $walletEntry = new WalletEntry(
             points: $entry->points,
             status: WalletEntryStatus::Active,
-            sourceType: 'activity',
+            sourceType: 'instant',
             reason: $entry->reason,
             createdAt: new \DateTimeImmutable(),
+            sourceRef: $entry->sourceRef,
+            label: $entry->label,
             expiresAt: $expiresAt,
         );
         $this->entries[] = $walletEntry;
@@ -66,40 +68,40 @@ final class PointWallet
     }
 
     /**
-     * Debit pending points for a returned order line.
+     * Debit pending points for a specific source item (e.g. returned product).
      */
-    public function debitForReturn(string $orderId, string $lineId): int
+    public function debitItem(string $sourceRef, string $sourceItemRef): int
     {
         foreach ($this->entries as $entry) {
-            if ($entry->orderId === $orderId
-                && $entry->lineId === $lineId
+            if ($entry->sourceRef === $sourceRef
+                && $entry->sourceItemRef === $sourceItemRef
                 && $entry->status() === WalletEntryStatus::Pending
             ) {
                 $entry->debit();
                 $this->domainEvents[] = new PointsDebitedForReturn(
-                    $this->participantId, $orderId, $lineId, $entry->points, $entry->productName,
+                    $this->participantId, $sourceRef, $sourceItemRef, $entry->points, $entry->label,
                 );
                 return $entry->points;
             }
         }
-        throw new \DomainException("No pending entry for {$orderId}/{$lineId}");
+        throw new \DomainException("No pending entry for {$sourceRef}/{$sourceItemRef}");
     }
 
     /**
-     * When return period expires: move all pending entries for this order to active.
+     * When deferral period expires: move all pending entries for this source to active.
      */
-    public function activateOrder(string $orderId, \DateTimeImmutable $expiresAt): int
+    public function activateSource(string $sourceRef, \DateTimeImmutable $expiresAt): int
     {
         $activated = 0;
         foreach ($this->entries as $entry) {
-            if ($entry->orderId === $orderId && $entry->status() === WalletEntryStatus::Pending) {
+            if ($entry->sourceRef === $sourceRef && $entry->status() === WalletEntryStatus::Pending) {
                 $entry->activate($expiresAt);
                 $activated += $entry->points;
             }
         }
         if ($activated > 0) {
             $this->domainEvents[] = new PointsActivated(
-                $this->participantId, $activated, "Order {$orderId} return period expired", $expiresAt,
+                $this->participantId, $activated, "Source {$sourceRef} deferral period expired", $expiresAt,
             );
         }
         return $activated;
@@ -149,11 +151,11 @@ final class PointWallet
     }
 
     /** @return WalletEntry[] */
-    public function entriesByOrder(string $orderId): array
+    public function entriesBySource(string $sourceRef): array
     {
         return array_values(array_filter(
             $this->entries,
-            fn(WalletEntry $e) => $e->orderId === $orderId,
+            fn(WalletEntry $e) => $e->sourceRef === $sourceRef,
         ));
     }
 

@@ -32,9 +32,9 @@ final readonly class OrderPointsRule implements IncentiveRule
             $entries[] = new JournalEntry(
                 points: $linePoints,
                 reason: "Order {$orderId}, line {$line['lineId']}",
-                orderId: $orderId,
-                lineId: $line['lineId'],
-                productName: $line['productName'] ?? null,
+                sourceRef: $orderId,
+                sourceItemRef: $line['lineId'],
+                label: $line['productName'] ?? null,
             );
         }
 

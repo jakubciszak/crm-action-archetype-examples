@@ -48,14 +48,14 @@ $orderAction->settle();
 $campaign->recordAction($orderAction);
 
 // Punkty z zamówienia → PENDING w portfelu
-$wallet->creditPendingFromOrder('ORD-001', $orderAction->decision()->journalEntries);
+$wallet->creditPending('ORD-001', $orderAction->decision()->journalEntries);
 
 echo "   Linie zamówienia:\n";
 foreach ($orderAction->decision()->journalEntries as $entry) {
-    echo "   → {$entry->lineId}: {$entry->productName}";
+    echo "   → {$entry->sourceItemRef}: {$entry->label}";
     $amountZl = 0;
     foreach ($orderAction->payload()['lines'] as $line) {
-        if ($line['lineId'] === $entry->lineId) {
+        if ($line['lineId'] === $entry->sourceItemRef) {
             $amountZl = $line['amountCents'] / 100;
         }
     }
@@ -94,7 +94,7 @@ echo "   → ReferralBonusRule: {$referralEntry->points} pkt → ACTIVE (wygasa:
 echo "4. Portfel po 2 zdarzeniach:\n";
 echo "   PENDING: {$wallet->pendingBalance()} pkt\n";
 foreach ($wallet->entriesByStatus(WalletEntryStatus::Pending) as $e) {
-    echo "     • {$e->orderId}/{$e->lineId} {$e->productName}: {$e->points} pkt\n";
+    echo "     • {$e->sourceRef}/{$e->sourceItemRef} {$e->label}: {$e->points} pkt\n";
 }
 echo "   ACTIVE:  {$wallet->activeBalance()} pkt\n";
 foreach ($wallet->entriesByStatus(WalletEntryStatus::Active) as $e) {
@@ -105,12 +105,12 @@ echo " (w tym {$wallet->activeBalance()} dostępnych)\n\n";
 
 // ─── 5. Zwrot produktu: Mysz Logitech MX ───
 echo "5. Zwrot produktu: Mysz Logitech MX (ORD-001/L2, 15 pkt) w okresie zwrotów:\n";
-$debitedPoints = $wallet->debitForReturn('ORD-001', 'L2');
+$debitedPoints = $wallet->debitItem('ORD-001', 'L2');
 $walletEvents = $wallet->releaseEvents();
 foreach ($walletEvents as $event) {
     if ($event instanceof PointsDebitedForReturn) {
         echo "   → PointsDebitedForReturn: -{$event->points} pkt";
-        echo " ({$event->orderId}/{$event->lineId} {$event->productName})\n";
+        echo " ({$event->sourceRef}/{$event->sourceItemRef} {$event->label})\n";
     }
 }
 echo "   PENDING po zwrocie: {$wallet->pendingBalance()} pkt\n\n";
@@ -119,15 +119,15 @@ echo "   PENDING po zwrocie: {$wallet->pendingBalance()} pkt\n\n";
 $returnPeriodEnd = $now->modify('+14 days');
 $orderExpiresAt = $returnPeriodEnd->modify('+6 months');
 echo "6. Koniec okresu zwrotów ORD-001 ({$returnPeriodEnd->format('Y-m-d')}):\n";
-$activatedPts = $wallet->activateOrder('ORD-001', $orderExpiresAt);
+$activatedPts = $wallet->activateSource('ORD-001', $orderExpiresAt);
 echo "   → {$activatedPts} pkt: PENDING → ACTIVE (wygasa: {$orderExpiresAt->format('Y-m-d')})\n\n";
 
 // ─── 7. Portfel końcowy ───
 echo "7. Portfel końcowy:\n";
 echo "   ACTIVE: {$wallet->activeBalance()} pkt\n";
 foreach ($wallet->entriesByStatus(WalletEntryStatus::Active) as $e) {
-    $source = $e->orderId
-        ? "{$e->orderId}/{$e->lineId} {$e->productName}"
+    $source = $e->sourceRef
+        ? "{$e->sourceRef}/{$e->sourceItemRef} {$e->label}"
         : $e->reason;
     echo "     • {$source}: {$e->points} pkt (wygasa: {$e->expiresAt()->format('Y-m-d')})\n";
 }
@@ -138,7 +138,7 @@ if ($debitedEntries !== []) {
     $debitedSum = array_sum(array_map(fn($e) => $e->points, $debitedEntries));
     echo "   DEBITED: {$debitedSum} pkt (zwroty)\n";
     foreach ($debitedEntries as $e) {
-        echo "     • {$e->orderId}/{$e->lineId} {$e->productName}: {$e->points} pkt\n";
+        echo "     • {$e->sourceRef}/{$e->sourceItemRef} {$e->label}: {$e->points} pkt\n";
     }
 }
 
@@ -149,8 +149,8 @@ $expiredPts = $wallet->expireEntries($future);
 echo "   → Wygasło: {$expiredPts} pkt (referral, 3-miesięczna ważność)\n";
 echo "   ACTIVE po wygaśnięciu: {$wallet->activeBalance()} pkt\n";
 foreach ($wallet->entriesByStatus(WalletEntryStatus::Active) as $e) {
-    $source = $e->orderId
-        ? "{$e->orderId}/{$e->lineId} {$e->productName}"
+    $source = $e->sourceRef
+        ? "{$e->sourceRef}/{$e->sourceItemRef} {$e->label}"
         : $e->reason;
     echo "     • {$source}: {$e->points} pkt (wygasa: {$e->expiresAt()->format('Y-m-d')})\n";
 }

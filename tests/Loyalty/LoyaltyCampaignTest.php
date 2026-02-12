@@ -45,7 +45,7 @@ final class LoyaltyCampaignTest extends TestCase
         $action1->settle();
         $campaign->recordAction($action1);
 
-        $wallet->creditPendingFromOrder('ORD-001', $action1->decision()->journalEntries);
+        $wallet->creditPending('ORD-001', $action1->decision()->journalEntries);
         self::assertSame(350, $wallet->pendingBalance());
         self::assertCount(3, $action1->decision()->journalEntries);
 
@@ -65,11 +65,11 @@ final class LoyaltyCampaignTest extends TestCase
         self::assertSame(50, $wallet->activeBalance());
 
         // Return mouse → debit 15 pending
-        $wallet->debitForReturn('ORD-001', 'L2');
+        $wallet->debitItem('ORD-001', 'L2');
         self::assertSame(335, $wallet->pendingBalance());
 
         // Return period ends → 335 pending → active (6 months)
-        $wallet->activateOrder('ORD-001', $now->modify('+6 months'));
+        $wallet->activateSource('ORD-001', $now->modify('+6 months'));
         self::assertSame(0, $wallet->pendingBalance());
         self::assertSame(385, $wallet->activeBalance());
 

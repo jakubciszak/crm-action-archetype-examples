@@ -9,8 +9,8 @@ final readonly class JournalEntry
     public function __construct(
         public int $points,
         public string $reason,
-        public ?string $orderId = null,
-        public ?string $lineId = null,
-        public ?string $productName = null,
+        public ?string $sourceRef = null,
+        public ?string $sourceItemRef = null,
+        public ?string $label = null,
     ) {}
 }

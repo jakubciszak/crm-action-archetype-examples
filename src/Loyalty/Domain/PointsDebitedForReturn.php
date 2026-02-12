@@ -8,9 +8,9 @@ final readonly class PointsDebitedForReturn
 {
     public function __construct(
         public string $participantId,
-        public string $orderId,
-        public string $lineId,
+        public string $sourceRef,
+        public string $sourceItemRef,
         public int $points,
-        public ?string $productName,
+        public ?string $label,
     ) {}
 }

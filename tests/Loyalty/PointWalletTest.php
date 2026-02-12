@@ -31,7 +31,7 @@ final class PointWalletTest extends TestCase
     {
         $wallet = new PointWallet('USR-001');
 
-        $wallet->creditPendingFromOrder('ORD-001', [
+        $wallet->creditPending('ORD-001', [
             new JournalEntry(300, 'Laptop', 'ORD-001', 'L1', 'Laptop Dell'),
             new JournalEntry(15, 'Mysz', 'ORD-001', 'L2', 'Mysz Logitech'),
             new JournalEntry(35, 'Klawiatura', 'ORD-001', 'L3', 'Keychron'),
@@ -46,7 +46,7 @@ final class PointWalletTest extends TestCase
         self::assertCount(3, $events);
         self::assertInstanceOf(PointsPending::class, $events[0]);
         self::assertSame(300, $events[0]->points);
-        self::assertSame('L1', $events[0]->lineId);
+        self::assertSame('L1', $events[0]->sourceItemRef);
     }
 
     #[Test]
@@ -73,13 +73,13 @@ final class PointWalletTest extends TestCase
     public function debits_pending_for_product_return(): void
     {
         $wallet = new PointWallet('USR-001');
-        $wallet->creditPendingFromOrder('ORD-001', [
+        $wallet->creditPending('ORD-001', [
             new JournalEntry(300, 'Laptop', 'ORD-001', 'L1', 'Laptop Dell'),
             new JournalEntry(15, 'Mysz', 'ORD-001', 'L2', 'Mysz Logitech'),
         ]);
         $wallet->releaseEvents();
 
-        $debited = $wallet->debitForReturn('ORD-001', 'L2');
+        $debited = $wallet->debitItem('ORD-001', 'L2');
 
         self::assertSame(15, $debited);
         self::assertSame(300, $wallet->pendingBalance());
@@ -89,38 +89,38 @@ final class PointWalletTest extends TestCase
         self::assertCount(1, $events);
         self::assertInstanceOf(PointsDebitedForReturn::class, $events[0]);
         self::assertSame(15, $events[0]->points);
-        self::assertSame('Mysz Logitech', $events[0]->productName);
+        self::assertSame('Mysz Logitech', $events[0]->label);
     }
 
     #[Test]
     public function debit_for_return_throws_on_unknown_line(): void
     {
         $wallet = new PointWallet('USR-001');
-        $wallet->creditPendingFromOrder('ORD-001', [
+        $wallet->creditPending('ORD-001', [
             new JournalEntry(100, 'Laptop', 'ORD-001', 'L1', 'Laptop'),
         ]);
 
         $this->expectException(\DomainException::class);
-        $wallet->debitForReturn('ORD-001', 'L99');
+        $wallet->debitItem('ORD-001', 'L99');
     }
 
     #[Test]
     public function activates_remaining_pending_after_return_period(): void
     {
         $wallet = new PointWallet('USR-001');
-        $wallet->creditPendingFromOrder('ORD-001', [
+        $wallet->creditPending('ORD-001', [
             new JournalEntry(300, 'Laptop', 'ORD-001', 'L1', 'Laptop Dell'),
             new JournalEntry(15, 'Mysz', 'ORD-001', 'L2', 'Mysz Logitech'),
             new JournalEntry(35, 'Klawiatura', 'ORD-001', 'L3', 'Keychron'),
         ]);
 
         // Return one item
-        $wallet->debitForReturn('ORD-001', 'L2');
+        $wallet->debitItem('ORD-001', 'L2');
         $wallet->releaseEvents();
 
         // Return period expires → remaining pending → active
         $expiresAt = new \DateTimeImmutable('+6 months');
-        $activated = $wallet->activateOrder('ORD-001', $expiresAt);
+        $activated = $wallet->activateSource('ORD-001', $expiresAt);
 
         self::assertSame(335, $activated); // 300 + 35, without the returned 15
         self::assertSame(0, $wallet->pendingBalance());
@@ -151,10 +151,10 @@ final class PointWalletTest extends TestCase
         );
 
         // Order: active, expires in 6 months
-        $wallet->creditPendingFromOrder('ORD-001', [
+        $wallet->creditPending('ORD-001', [
             new JournalEntry(300, 'Laptop', 'ORD-001', 'L1', 'Laptop'),
         ]);
-        $wallet->activateOrder('ORD-001', $now->modify('+6 months'));
+        $wallet->activateSource('ORD-001', $now->modify('+6 months'));
         $wallet->releaseEvents();
 
         // 4 months later: referral expired, order still active
@@ -178,7 +178,7 @@ final class PointWalletTest extends TestCase
         $now = new \DateTimeImmutable('2025-05-12');
 
         // Order with 3 lines → pending
-        $wallet->creditPendingFromOrder('ORD-001', [
+        $wallet->creditPending('ORD-001', [
             new JournalEntry(300, 'Laptop', 'ORD-001', 'L1', 'Laptop Dell XPS'),
             new JournalEntry(15, 'Mysz', 'ORD-001', 'L2', 'Mysz Logitech MX'),
             new JournalEntry(35, 'Klawiatura', 'ORD-001', 'L3', 'Klawiatura Keychron'),
@@ -193,12 +193,12 @@ final class PointWalletTest extends TestCase
         self::assertSame(50, $wallet->activeBalance());
 
         // Return mouse → debit from pending
-        $wallet->debitForReturn('ORD-001', 'L2');
+        $wallet->debitItem('ORD-001', 'L2');
         self::assertSame(335, $wallet->pendingBalance());
 
         // Return period ends → 335 pending → active (6 months)
         $orderExpiresAt = $now->modify('+14 days')->modify('+6 months');
-        $wallet->activateOrder('ORD-001', $orderExpiresAt);
+        $wallet->activateSource('ORD-001', $orderExpiresAt);
         self::assertSame(0, $wallet->pendingBalance());
         self::assertSame(385, $wallet->activeBalance()); // 335 order + 50 referral
 
@@ -216,21 +216,21 @@ final class PointWalletTest extends TestCase
     }
 
     #[Test]
-    public function entries_by_order_returns_all_for_order(): void
+    public function entries_by_source_returns_all_for_source(): void
     {
         $wallet = new PointWallet('USR-001');
-        $wallet->creditPendingFromOrder('ORD-001', [
+        $wallet->creditPending('ORD-001', [
             new JournalEntry(100, 'Line 1', 'ORD-001', 'L1', 'Product A'),
             new JournalEntry(200, 'Line 2', 'ORD-001', 'L2', 'Product B'),
         ]);
-        $wallet->creditPendingFromOrder('ORD-002', [
+        $wallet->creditPending('ORD-002', [
             new JournalEntry(50, 'Line 1', 'ORD-002', 'L1', 'Product C'),
         ]);
 
-        $ord1 = $wallet->entriesByOrder('ORD-001');
+        $ord1 = $wallet->entriesBySource('ORD-001');
         self::assertCount(2, $ord1);
 
-        $ord2 = $wallet->entriesByOrder('ORD-002');
+        $ord2 = $wallet->entriesBySource('ORD-002');
         self::assertCount(1, $ord2);
     }
 
@@ -238,13 +238,13 @@ final class PointWalletTest extends TestCase
     public function cannot_debit_already_debited_entry(): void
     {
         $wallet = new PointWallet('USR-001');
-        $wallet->creditPendingFromOrder('ORD-001', [
+        $wallet->creditPending('ORD-001', [
             new JournalEntry(100, 'Line 1', 'ORD-001', 'L1', 'Product A'),
         ]);
 
-        $wallet->debitForReturn('ORD-001', 'L1');
+        $wallet->debitItem('ORD-001', 'L1');
 
         $this->expectException(\DomainException::class);
-        $wallet->debitForReturn('ORD-001', 'L1');
+        $wallet->debitItem('ORD-001', 'L1');
     }
 }
